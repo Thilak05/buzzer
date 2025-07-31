@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Competition Buzzer - Participant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div class="container participant-container">
+        <div class="header">
+            <h1><i class="fas fa-user"></i> Participant Panel</h1>
+            <button class="back-btn" onclick="goBack()">
+                <i class="fas fa-arrow-left"></i> Back to Main
+            </button>
+        </div>
+
+        <!-- Team Registration -->
+        <div class="registration-section" id="registrationSection">
+            <div class="form-card">
+                <h2><i class="fas fa-users"></i> Register Your Team</h2>
+                <div class="form-group">
+                    <label for="teamName">Team Name</label>
+                    <input type="text" id="teamName" placeholder="Enter your team name" maxlength="50">
+                    <div class="input-feedback" id="teamNameFeedback"></div>
+                </div>
+                <button class="btn primary-btn" onclick="registerTeam()">
+                    <i class="fas fa-sign-in-alt"></i> Join Competition
+                </button>
+            </div>
+        </div>
+
+        <!-- Buzzer Interface -->
+        <div class="buzzer-section" id="buzzerSection" style="display: none;">
+            <div class="team-info">
+                <h2><i class="fas fa-flag"></i> Team: <span id="registeredTeamName"></span></h2>
+                <button class="logout-btn" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i> Leave Competition
+                </button>
+            </div>
+
+            <div class="buzzer-status" id="buzzerStatus">
+                <div class="status-indicator" id="statusIndicator">
+                    <i class="fas fa-lock"></i>
+                </div>
+                <h3 id="statusText">Buzzer Locked</h3>
+                <p id="statusDescription">Waiting for host to unlock the buzzer...</p>
+            </div>
+
+            <div class="buzzer-container">
+                <button class="buzzer-btn" id="buzzerBtn" onclick="pressBuzzer()" disabled>
+                    <div class="buzzer-inner">
+                        <i class="fas fa-bell"></i>
+                        <span>BUZZ!</span>
+                    </div>
+                </button>
+            </div>
+
+            <div class="last-buzzer" id="lastBuzzer" style="display: none;">
+                <h4><i class="fas fa-trophy"></i> Last Buzzer Winner</h4>
+                <div class="winner-info" id="winnerInfo"></div>
+            </div>
+
+            <div class="participants-list">
+                <h4><i class="fas fa-list"></i> Active Participants (<span id="participantCount">0</span>)</h4>
+                <div class="participants-grid" id="participantsList"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='participant.js') }}"></script>
+</body>
+</html>
