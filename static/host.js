@@ -179,18 +179,28 @@ function updateHostUI(data) {
         lockBtn.disabled = false;
     }
     
-    // Update last winner display
-    if (data.buzzer_winner) {
-        const timeStr = new Date(data.buzzer_winner.timestamp).toLocaleTimeString();
-        lastWinnerDisplay.innerHTML = `
-            <div style="text-align: center;">
-                <i class="fas fa-trophy" style="color: #f39c12; font-size: 2rem; margin-bottom: 10px;"></i>
-                <h4 style="margin: 0; color: #333;">${data.buzzer_winner.team_name}</h4>
-                <p style="margin: 5px 0 0 0; color: #666;">Buzzed at ${timeStr}</p>
-            </div>
-        `;
+    // Update rankings display
+    if (data.rankings && data.rankings.length > 0) {
+        let rankingsHTML = '<div style="text-align: center;">';
+        rankingsHTML += '<i class="fas fa-trophy" style="color: #f39c12; font-size: 2rem; margin-bottom: 10px;"></i>';
+        rankingsHTML += '<h4 style="margin: 0 0 15px 0; color: #333;">Buzzer Rankings</h4>';
+        
+        data.rankings.forEach((participant, index) => {
+            const timeStr = new Date(participant.buzzer_time).toLocaleTimeString();
+            const medalIcon = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${participant.rank}.`;
+            
+            rankingsHTML += `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; margin: 5px 0; background: ${index < 3 ? '#f8f9fa' : '#fff'}; border-radius: 5px; border-left: 3px solid ${index === 0 ? '#f39c12' : index === 1 ? '#95a5a6' : index === 2 ? '#e67e22' : '#bdc3c7'};">
+                    <span style="font-weight: bold;">${medalIcon} ${participant.team_name}</span>
+                    <span style="color: #666; font-size: 0.9em;">${timeStr}</span>
+                </div>
+            `;
+        });
+        
+        rankingsHTML += '</div>';
+        lastWinnerDisplay.innerHTML = rankingsHTML;
     } else {
-        lastWinnerDisplay.innerHTML = '<p>No buzzer pressed yet</p>';
+        lastWinnerDisplay.innerHTML = '<p>No participants have buzzed yet</p>';
     }
 }
 
@@ -254,6 +264,34 @@ function clearLastBuzzer() {
     });
 }
 
+// Unlock specific participant's buzzer
+function unlockParticipant(teamName) {
+    if (!confirm(`Are you sure you want to unlock the buzzer for "${teamName}"?`)) {
+        return;
+    }
+    
+    fetch('/api/unlock_participant', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ team_name: teamName })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification(data.message, 'success');
+            loadHostStatus();
+        } else {
+            showNotification(data.message, 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Unlock participant error:', error);
+        showNotification('Failed to unlock participant buzzer', 'error');
+    });
+}
+
 // Update participants table
 function updateParticipantsTable(participants) {
     if (!participants || participants.length === 0) {
@@ -274,6 +312,7 @@ function updateParticipantsTable(participants) {
                     <th>Join Time</th>
                     <th>Status</th>
                     <th>Buzzer Time</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -284,12 +323,19 @@ function updateParticipantsTable(participants) {
                         '<span style="color: #f39c12; font-weight: bold;"><i class="fas fa-bell"></i> Buzzed</span>' : 
                         '<span style="color: #4CAF50;"><i class="fas fa-check-circle"></i> Ready</span>';
                     
+                    const unlockButton = participant.buzzer_pressed ? 
+                        `<button class="btn small-btn info-btn" onclick="unlockParticipant('${participant.team_name}')" title="Unlock this participant's buzzer">
+                            <i class="fas fa-unlock-alt"></i>
+                        </button>` : 
+                        '<span style="color: #ccc;">-</span>';
+                    
                     return `
                         <tr>
                             <td style="font-weight: 500;">${participant.team_name}</td>
                             <td style="color: #666;">${joinTime}</td>
                             <td>${status}</td>
                             <td style="color: #666;">${buzzerTime}</td>
+                            <td>${unlockButton}</td>
                         </tr>
                     `;
                 }).join('')}
@@ -419,6 +465,13 @@ socket.on('participant_left', (data) => {
 socket.on('buzzer_pressed', (winner) => {
     if (isAuthenticated) {
         showNotification(`🏆 ${winner.team_name} pressed the buzzer!`, 'success');
+        loadHostStatus();
+    }
+});
+
+socket.on('buzzer_cleared', () => {
+    if (isAuthenticated) {
+        showNotification('All buzzer presses have been cleared', 'info');
         loadHostStatus();
     }
 });

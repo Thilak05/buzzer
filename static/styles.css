@@ -158,6 +158,13 @@ body {
     box-shadow: none;
 }
 
+.small-btn {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    border-radius: 15px;
+    min-width: auto;
+}
+
 .participant-btn {
     background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
 }

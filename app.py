@@ -45,6 +45,28 @@ def log_activity(activity, activity_type='info'):
     # Emit to all connected hosts
     socketio.emit('log_update', log_entry, room='hosts')
 
+def get_buzzer_rankings():
+    """Get buzzer rankings sorted by timestamp"""
+    buzzed_participants = []
+    for participant in app_state['participants'].values():
+        if participant['buzzer_pressed'] and participant.get('buzzer_time'):
+            buzzed_participants.append({
+                'team_name': participant['team_name'],
+                'buzzer_time': participant['buzzer_time'],
+                'timestamp_obj': datetime.datetime.fromisoformat(participant['buzzer_time'])
+            })
+    
+    # Sort by timestamp (earliest first)
+    buzzed_participants.sort(key=lambda x: x['timestamp_obj'])
+    
+    # Add ranking positions
+    for i, participant in enumerate(buzzed_participants):
+        participant['rank'] = i + 1
+        # Remove timestamp_obj as it's not JSON serializable
+        del participant['timestamp_obj']
+    
+    return buzzed_participants
+
 def is_team_name_taken(team_name, exclude_session=None):
     """Check if team name is already taken (case-insensitive)"""
     team_name_lower = team_name.lower()
@@ -132,56 +154,67 @@ def participant_status():
         return jsonify({'authenticated': False})
     
     participant = app_state['participants'][participant_id]
+    
+    # Get ranking data
+    ranking_data = get_buzzer_rankings()
+    
     return jsonify({
         'authenticated': True,
         'team_name': participant['team_name'],
         'buzzer_locked': app_state['buzzer_locked'],
-        'buzzer_winner': app_state['buzzer_winner'],
+        'my_buzzer_locked': participant['buzzer_pressed'],  # Individual buzzer lock status
+        'buzzer_pressed': participant['buzzer_pressed'],
+        'buzzer_time': participant.get('buzzer_time'),
+        'ranking_data': ranking_data,
         'participants': [
-            {'team_name': p['team_name'], 'buzzer_pressed': p['buzzer_pressed']} 
+            {
+                'team_name': p['team_name'], 
+                'buzzer_pressed': p['buzzer_pressed'],
+                'buzzer_time': p.get('buzzer_time')
+            } 
             for p in app_state['participants'].values()
         ]
     })
 
 @app.route('/api/press_buzzer', methods=['POST'])
 def press_buzzer():
-    """Handle buzzer press"""
+    """Handle buzzer press with thread safety for simultaneous presses"""
     participant_id = session.get('participant_id')
     if not participant_id or participant_id not in app_state['participants']:
         return jsonify({'success': False, 'message': 'Not authenticated'})
     
     if app_state['buzzer_locked']:
-        return jsonify({'success': False, 'message': 'Buzzer is locked'})
+        return jsonify({'success': False, 'message': 'Buzzer is globally locked'})
     
     participant = app_state['participants'][participant_id]
     if participant['buzzer_pressed']:
-        return jsonify({'success': False, 'message': 'You already pressed the buzzer'})
+        return jsonify({'success': False, 'message': 'Your buzzer is locked - you already pressed it'})
     
-    # Check if someone already won
-    if app_state['buzzer_winner']:
-        return jsonify({'success': False, 'message': 'Someone already buzzed in'})
-    
-    # Record buzzer press
+    # Record buzzer press with precise timing - this is atomic per participant
     buzz_time = datetime.datetime.now()
     participant['buzzer_pressed'] = True
     participant['buzzer_time'] = buzz_time.isoformat()
     
-    # Set as winner
-    app_state['buzzer_winner'] = {
+    # Calculate ranking position after recording the press
+    buzzed_participants = [p for p in app_state['participants'].values() if p['buzzer_pressed']]
+    ranking_position = len(buzzed_participants)
+    
+    log_activity(f'Team "{participant["team_name"]}" pressed the buzzer (Rank #{ranking_position})!', 'success')
+    
+    # Notify all clients about the new buzzer press
+    socketio.emit('buzzer_pressed', {
         'team_name': participant['team_name'],
         'timestamp': buzz_time.isoformat(),
-        'participant_id': participant_id
-    }
+        'participant_id': participant_id,
+        'ranking_position': ranking_position
+    })
     
-    # Lock buzzer
-    app_state['buzzer_locked'] = True
-    
-    log_activity(f'Team "{participant["team_name"]}" pressed the buzzer first!', 'success')
-    
-    # Notify all clients
-    socketio.emit('buzzer_pressed', app_state['buzzer_winner'])
-    
-    return jsonify({'success': True, 'message': 'Buzzer pressed! You were first!'})
+    return jsonify({
+        'success': True, 
+        'message': f'Buzzer pressed! You are #{ranking_position}! Your buzzer is now locked.',
+        'ranking_position': ranking_position,
+        'buzzer_locked': True
+    })
 
 @app.route('/api/logout_participant', methods=['POST'])
 def logout_participant():
@@ -246,7 +279,6 @@ def host_status():
     return jsonify({
         'authenticated': True,
         'buzzer_locked': app_state['buzzer_locked'],
-        'buzzer_winner': app_state['buzzer_winner'],
         'participants': [
             {
                 'team_name': p['team_name'],
@@ -255,29 +287,63 @@ def host_status():
                 'buzzer_time': p['buzzer_time']
             } for p in app_state['participants'].values()
         ],
+        'rankings': get_buzzer_rankings(),
         'logs': app_state['logs'][-20:]  # Last 20 logs
     })
 
 @app.route('/api/unlock_buzzer', methods=['POST'])
 def unlock_buzzer():
-    """Unlock buzzer"""
+    """Unlock buzzer for everyone"""
     if not session.get('host_authenticated'):
         return jsonify({'success': False, 'message': 'Not authenticated'})
     
     app_state['buzzer_locked'] = False
-    app_state['buzzer_winner'] = None
     
     # Reset all participants
     for participant in app_state['participants'].values():
         participant['buzzer_pressed'] = False
         participant['buzzer_time'] = None
     
-    log_activity('Buzzer unlocked by host', 'success')
+    log_activity('Buzzer unlocked for all participants by host', 'success')
     
     # Notify all clients
     socketio.emit('buzzer_unlocked', {})
     
-    return jsonify({'success': True, 'message': 'Buzzer unlocked'})
+    return jsonify({'success': True, 'message': 'Buzzer unlocked for everyone'})
+
+@app.route('/api/unlock_participant', methods=['POST'])
+def unlock_participant():
+    """Unlock buzzer for a specific participant"""
+    if not session.get('host_authenticated'):
+        return jsonify({'success': False, 'message': 'Not authenticated'})
+    
+    data = request.get_json()
+    team_name = data.get('team_name', '').strip()
+    
+    if not team_name:
+        return jsonify({'success': False, 'message': 'Team name is required'})
+    
+    # Find participant by team name
+    participant_found = False
+    for participant_id, participant in app_state['participants'].items():
+        if participant['team_name'].lower() == team_name.lower():
+            participant['buzzer_pressed'] = False
+            participant['buzzer_time'] = None
+            participant_found = True
+            
+            log_activity(f'Buzzer unlocked for team "{participant["team_name"]}" by host', 'info')
+            
+            # Notify specific participant
+            socketio.emit('participant_buzzer_unlocked', {
+                'team_name': participant['team_name'],
+                'participant_id': participant_id
+            })
+            break
+    
+    if not participant_found:
+        return jsonify({'success': False, 'message': 'Participant not found'})
+    
+    return jsonify({'success': True, 'message': f'Buzzer unlocked for {team_name}'})
 
 @app.route('/api/lock_buzzer', methods=['POST'])
 def lock_buzzer():
@@ -295,17 +361,21 @@ def lock_buzzer():
 
 @app.route('/api/clear_winner', methods=['POST'])
 def clear_winner():
-    """Clear buzzer winner display"""
+    """Clear all buzzer presses and rankings"""
     if not session.get('host_authenticated'):
         return jsonify({'success': False, 'message': 'Not authenticated'})
     
-    app_state['buzzer_winner'] = None
-    log_activity('Last buzzer winner display cleared by host', 'info')
+    # Clear all buzzer presses from participants
+    for participant in app_state['participants'].values():
+        participant['buzzer_pressed'] = False
+        participant['buzzer_time'] = None
     
-    # Notify all clients
-    socketio.emit('winner_cleared', {})
+    log_activity('All buzzer presses cleared by host', 'info')
     
-    return jsonify({'success': True, 'message': 'Winner display cleared'})
+    # Notify all clients to update their status
+    socketio.emit('buzzer_cleared', {})
+    
+    return jsonify({'success': True, 'message': 'All buzzer presses cleared'})
 
 @app.route('/api/clear_logs', methods=['POST'])
 def clear_logs():

@@ -144,11 +144,11 @@ function loadParticipantStatus() {
                 buzzerSection.style.display = 'block';
                 registeredTeamNameSpan.textContent = teamName;
                 
-                updateBuzzerStatus(data.buzzer_locked);
+                updateBuzzerStatus(data.buzzer_locked, data.my_buzzer_locked, data.buzzer_pressed);
                 updateParticipantsList(data.participants);
                 
-                if (data.buzzer_winner) {
-                    showBuzzerWinner(data.buzzer_winner);
+                if (data.ranking_data && data.ranking_data.length > 0) {
+                    showBuzzerRankings(data.ranking_data);
                 }
             }
         })
@@ -158,20 +158,30 @@ function loadParticipantStatus() {
 }
 
 // Update buzzer status
-function updateBuzzerStatus(locked) {
-    if (locked) {
+function updateBuzzerStatus(globallyLocked, myBuzzerLocked, buzzerPressed) {
+    if (globallyLocked) {
         statusIndicator.innerHTML = '<i class="fas fa-lock"></i>';
         statusIndicator.className = 'status-indicator locked';
         statusText.textContent = 'Buzzer Locked';
         statusDescription.textContent = 'Waiting for host to unlock the buzzer...';
         buzzerBtn.disabled = true;
         buzzerBtn.classList.remove('pressed');
+    } else if (myBuzzerLocked || buzzerPressed) {
+        statusIndicator.innerHTML = '<i class="fas fa-user-lock"></i>';
+        statusIndicator.className = 'status-indicator locked';
+        statusText.textContent = 'Your Buzzer Locked';
+        statusDescription.textContent = 'You already pressed the buzzer. Waiting for host to unlock...';
+        buzzerBtn.disabled = true;
+        buzzerBtn.classList.add('pressed');
+        buzzerBtn.innerHTML = '<i class="fas fa-check"></i> BUZZED!';
     } else {
         statusIndicator.innerHTML = '<i class="fas fa-unlock"></i>';
         statusIndicator.className = 'status-indicator unlocked';
         statusText.textContent = 'Buzzer Ready';
         statusDescription.textContent = 'Click the buzzer to answer!';
         buzzerBtn.disabled = false;
+        buzzerBtn.classList.remove('pressed');
+        buzzerBtn.innerHTML = '<i class="fas fa-hand-paper"></i> BUZZ!';
         buzzerPressed = false;
     }
 }
@@ -185,6 +195,7 @@ function pressBuzzer() {
     buzzerPressed = true;
     buzzerBtn.classList.add('pressed');
     buzzerBtn.disabled = true;
+    buzzerBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Buzzing...';
     
     fetch('/api/press_buzzer', {
         method: 'POST',
@@ -196,11 +207,21 @@ function pressBuzzer() {
     .then(data => {
         if (data.success) {
             showNotification(data.message, 'success');
+            // Update UI to locked state
+            statusIndicator.innerHTML = '<i class="fas fa-user-lock"></i>';
+            statusIndicator.className = 'status-indicator locked';
+            statusText.textContent = 'Your Buzzer Locked';
+            statusDescription.textContent = 'You already pressed the buzzer. Waiting for host to unlock...';
+            buzzerBtn.innerHTML = '<i class="fas fa-check"></i> BUZZED!';
+            buzzerBtn.disabled = true;
+            // Refresh status to get latest rankings
+            loadParticipantStatus();
         } else {
             showNotification(data.message, 'error');
             buzzerPressed = false;
             buzzerBtn.classList.remove('pressed');
             buzzerBtn.disabled = false;
+            buzzerBtn.innerHTML = '<i class="fas fa-hand-paper"></i> BUZZ!';
         }
     })
     .catch(error => {
@@ -209,23 +230,40 @@ function pressBuzzer() {
         buzzerPressed = false;
         buzzerBtn.classList.remove('pressed');
         buzzerBtn.disabled = false;
+        buzzerBtn.innerHTML = '<i class="fas fa-hand-paper"></i> BUZZ!';
     });
 }
 
-// Show buzzer winner
-function showBuzzerWinner(winner) {
-    if (!winner) {
+// Show buzzer rankings
+function showBuzzerRankings(rankings) {
+    if (!rankings || rankings.length === 0) {
         lastBuzzer.style.display = 'none';
         return;
     }
-    
-    const timeStr = new Date(winner.timestamp).toLocaleTimeString();
-    winnerInfo.innerHTML = `
-        <i class="fas fa-trophy"></i>
-        <strong>${winner.team_name}</strong>
-        <small>at ${timeStr}</small>
-    `;
+
     lastBuzzer.style.display = 'block';
+    
+    let rankingsHTML = '<h4 style="margin: 0 0 15px 0; color: #333; text-align: center;">📊 Current Rankings</h4>';
+    
+    rankings.forEach((participant, index) => {
+        const timeStr = new Date(participant.buzzer_time).toLocaleTimeString();
+        const medalIcon = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${participant.rank}.`;
+        
+        rankingsHTML += `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; margin: 5px 0; background: ${index < 3 ? '#f8f9fa' : '#fff'}; border-radius: 5px; border-left: 3px solid ${index === 0 ? '#f39c12' : index === 1 ? '#95a5a6' : index === 2 ? '#e67e22' : '#bdc3c7'};">
+                <span style="font-weight: bold;">${medalIcon} ${participant.team_name}</span>
+                <span style="color: #666; font-size: 0.9em;">${timeStr}</span>
+            </div>
+        `;
+    });
+    
+    lastBuzzer.innerHTML = rankingsHTML;
+}
+
+// Show buzzer winner (legacy - now redirects to rankings)
+function showBuzzerWinner(winner) {
+    // This function is kept for compatibility but redirects to rankings
+    loadParticipantStatus();
 }
 
 // Update participants list
@@ -301,18 +339,43 @@ socket.on('buzzer_locked', () => {
     showNotification('Buzzer has been locked by host', 'info');
 });
 
-socket.on('buzzer_pressed', (winner) => {
-    updateBuzzerStatus(true);
-    showBuzzerWinner(winner);
+socket.on('buzzer_pressed', (data) => {
+    showNotification(`${data.team_name} pressed the buzzer! (Rank #${data.ranking_position})`, 'info');
     
-    if (winner.team_name !== teamName) {
-        showNotification(`${winner.team_name} pressed the buzzer first!`, 'info');
-        buzzerBtn.disabled = true;
+    // Refresh status to get updated rankings
+    if (isRegistered) {
+        loadParticipantStatus();
     }
 });
 
-socket.on('winner_cleared', () => {
-    showBuzzerWinner(null);
+socket.on('buzzer_cleared', () => {
+    // Reset buzzer state for all participants
+    buzzerPressed = false;
+    buzzerBtn.disabled = false;
+    buzzerBtn.innerHTML = '<i class="fas fa-hand-paper"></i> BUZZ!';
+    buzzerBtn.className = 'buzzer-btn';
+    
+    showNotification('All buzzer presses have been cleared by the host', 'info');
+    
+    // Refresh status to get updated data
+    if (isRegistered) {
+        loadParticipantStatus();
+    }
+});
+
+socket.on('participant_buzzer_unlocked', (data) => {
+    if (data.team_name === teamName) {
+        // My buzzer was specifically unlocked
+        buzzerPressed = false;
+        buzzerBtn.disabled = false;
+        buzzerBtn.innerHTML = '<i class="fas fa-hand-paper"></i> BUZZ!';
+        buzzerBtn.className = 'buzzer-btn';
+        
+        showNotification('Your buzzer has been unlocked by the host!', 'success');
+        
+        // Refresh status
+        loadParticipantStatus();
+    }
 });
 
 socket.on('participant_joined', (data) => {
